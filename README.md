@@ -1,4 +1,4 @@
-# CoLoR-Filter
+# :rainbow: CoLoR-Filter :rainbow:
 
 ## Description
 
