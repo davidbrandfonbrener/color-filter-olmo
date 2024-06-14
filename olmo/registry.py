@@ -1,5 +1,4 @@
-download_path = "/n/holyscratch01/kempner_fellows/Users/dbrandfonbrener/color-filter"
-# download_path = "YOUR_PATH_HERE"
+download_path = "YOUR_PATH_HERE"
 
 DATA_DICT = {
     "c4": f"{download_path}/full_data/c4",

@@ -32,7 +32,6 @@ if [ -z "$CHECKPOINTS_PATH" ]
 then
     export CHECKPOINTS_PATH=ckpts
 fi
-export CHECKPOINTS_PATH=/n/holyscratch01/sham_lab/data-olmo/ckpts
 
 # Set ntasks if not set
 if [ -z "$SLURM_NTASKS_PER_NODE" ]
