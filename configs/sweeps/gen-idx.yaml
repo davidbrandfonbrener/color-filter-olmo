@@ -1,0 +1,10 @@
+# 8 jobs
+# wandb:
+#   group: index
+
+seed: 1
+data:
+  extra_data_paths: 
+    - pretrain-1-seq+pretrain-2-seq+pretrain-3-seq+pretrain-4-seq+pretrain-5-seq+pretrain-6-seq+pretrain-7-seq,all-1-seq+all-2-seq+all-3-seq+all-4-seq+all-5-seq+all-6-seq+all-7-seq
+    - pretrain-1-seq+pretrain-2-seq+pretrain-3-seq+pretrain-4-seq+pretrain-5-seq+pretrain-6-seq+pretrain-7-seq,books-1-seq+books-2-seq+books-3-seq+books-4-seq+books-5-seq+books-6-seq+books-7-seq
+tau: [64, 32, 16, 7]

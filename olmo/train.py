@@ -168,6 +168,7 @@ class Trainer:
                     label_smoothing=0.0,
                     logit_scale=1.0,
                     lse_square_scale=0.0,
+                    ignored_index=ignore_index,
                     inplace_backward=False,
                     process_group=None,
                     **ignore_index_kwarg,
@@ -534,7 +535,8 @@ class Trainer:
         load_trainer_state: bool = True,
     ):
         # Zero-gradients to avoid gathering them.
-        self.optim.zero_grad(set_to_none=True)
+        if self.optim is not None:
+            self.optim.zero_grad(set_to_none=True)
         checkpointer = FullCheckpointer(self.cfg)
         trainer_state = checkpointer.restore_checkpoint(
             load_path,
@@ -607,22 +609,23 @@ class Trainer:
 
     def get_labels(self, batch: Dict[str, Any]) -> torch.Tensor:
         # Labels are just input IDs shifted to the left (first item is ignored).
-        labels, label_mask, attention_mask, instance_mask = (
+        labels, label_mask, attention_mask = (
             batch["input_ids"].clone(),
             batch.get("label_mask"),
             batch.get("attention_mask"),
-            batch.get("instance_mask"),
         )
         if label_mask is not None:
             labels.masked_fill_(~label_mask, -100)
         if attention_mask is not None:
             labels.masked_fill_(attention_mask == 0.0, -100)
-        if instance_mask is not None:
-            labels.masked_fill_(~instance_mask.unsqueeze(-1), value=-100)
         return labels[..., 1:].contiguous()
 
     def model_forward(
-        self, batch: Dict[str, Any], loss_reduction: str = "mean", compute_z_loss: bool = False
+        self,
+        batch: Dict[str, Any],
+        loss_reduction: str = "mean",
+        compute_z_loss: bool = False,
+        return_logits: bool = True,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
         # shape: (batch_size, seq_len, vocab_size)
         logits = self.fsdp_model(
@@ -645,12 +648,14 @@ class Trainer:
             ce_loss = ce_loss.view(batch["input_ids"].shape[0], -1)
             if z_loss is not None:
                 z_loss = z_loss.view(batch["input_ids"].shape[0], -1)
-        return ce_loss, z_loss, logits
+        if return_logits:
+            return ce_loss, z_loss, logits
+        else:
+            return ce_loss, z_loss
 
     def train_batch(self, batch: Dict[str, Any]) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         # Split into micro-batches.
         micro_batches = self.split_batch(batch)
-        batch_size_in_tokens = batch["input_ids"].numel()
 
         # In case this helps with memory utilization.
         del batch
@@ -661,9 +666,9 @@ class Trainer:
             with torch.autocast("cuda", enabled=True, dtype=self.cfg.autocast_precision):
                 # Run forward pass.
                 ce_loss, z_loss, logits = self.model_forward(
-                    micro_batch, compute_z_loss=self.cfg.softmax_auxiliary_loss, loss_reduction="sum"
+                    micro_batch, compute_z_loss=self.cfg.softmax_auxiliary_loss
                 )
-                ce_loss = ce_loss / batch_size_in_tokens
+                ce_loss = ce_loss / len(micro_batches)
 
                 # In case this helps with memory utilization.
                 del micro_batch
@@ -690,6 +695,32 @@ class Trainer:
 
         return ce_batch_loss, z_batch_loss
 
+    def optim_step(self, should_log_metrics: bool = False):
+        optim_metrics = self.optim.clip_grads_and_collect_metrics(
+            self.global_step,
+            collect_param_metrics=should_log_metrics,
+            # passing this process group here ensures metrics are reduced correctly when we're using
+            # HYBRID sharding.
+            process_group=self.fsdp_model.process_group,
+        )
+        # Adjust the learning rate.
+        for group in self.optim.param_groups:
+            # TODO (epwalsh): if we want to enable different LRs or gradient clipping settings per group
+            # we should pass `group["initial_lr"]` or `group["initial_max_grad_norm"]` here instead of
+            # the corresponding values from `self.cfg`.
+            group["lr"] = self.scheduler.get_lr(
+                self.cfg.optimizer.learning_rate, self.scheduler_current, self.scheduler_max
+            )
+            group["max_grad_norm"] = self.scheduler.get_max_grad_norm(
+                self.cfg.max_grad_norm, self.scheduler_current, self.scheduler_max
+            )
+            group["max_grad_norm_ratio"] = self.scheduler.get_max_grad_norm(
+                self.cfg.max_grad_norm_ratio, self.scheduler_current, self.scheduler_max
+            )
+        # Optimizer step.
+        self.optim.step()
+        return optim_metrics
+
     def train_step(self, batch: Dict[str, Any], reduce_global_loss: bool = True) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
 
@@ -697,10 +728,6 @@ class Trainer:
         if self.indices_file is not None and "index" in batch:
             indices = "\t".join(str(int(i)) for i in batch["index"])
             self.indices_file.write(f"{self.global_step}\t{indices}\n")
-
-        # Record how many instances are going to be skipped (masked out).
-        if (instance_mask := batch.get("instance_mask")) is not None:
-            metrics["train/masked_instances_local_rank"] = (~instance_mask).sum().item()
 
         # Zero-gradients.
         self.optim.zero_grad(set_to_none=True)
@@ -721,31 +748,7 @@ class Trainer:
 
         # Clip gradient norms and collect param/gradient/optim metrics.
         should_log_optim_metrics_this_step = self.should_log_optim_metrics_this_step()
-        optim_metrics = self.optim.clip_grads_and_collect_metrics(
-            self.global_step,
-            collect_param_metrics=should_log_optim_metrics_this_step,
-            # passing this process group here ensures metrics are reduced correctly when we're using
-            # HYBRID sharding.
-            process_group=self.fsdp_model.process_group,
-        )
-
-        # Adjust the learning rate.
-        for group in self.optim.param_groups:
-            # TODO (epwalsh): if we want to enable different LRs or gradient clipping settings per group
-            # we should pass `group["initial_lr"]` or `group["initial_max_grad_norm"]` here instead of
-            # the corresponding values from `self.cfg`.
-            group["lr"] = self.scheduler.get_lr(
-                self.cfg.optimizer.learning_rate, self.scheduler_current, self.scheduler_max
-            )
-            group["max_grad_norm"] = self.scheduler.get_max_grad_norm(
-                self.cfg.max_grad_norm, self.scheduler_current, self.scheduler_max
-            )
-            group["max_grad_norm_ratio"] = self.scheduler.get_max_grad_norm(
-                self.cfg.max_grad_norm_ratio, self.scheduler_current, self.scheduler_max
-            )
-
-        # Optimizer step.
-        self.optim.step()
+        optim_metrics = self.optim_step(should_log_metrics=should_log_optim_metrics_this_step)
 
         # Collect metrics and check for NaN loss.
         # NOTE: this involves a bunch of host-device syncs so we wait until the last moment to do this.
@@ -843,8 +846,7 @@ class Trainer:
                 [
                     f"    {name}={format_float(value)}"
                     for name, value in metrics.items()
-                    if name == "optim/total_grad_norm"
-                    or not name.startswith("optim/")  # there's too many optimizer metrics
+                    if not name.startswith("optim/")  # there's too many optimizer metrics
                 ]
             )
         )
@@ -977,7 +979,7 @@ class Trainer:
         if self.cfg.gen1_gc_interval is not None:
             gc.disable()
 
-        if self.cfg.load_path is not None and self.global_step > 0 and self.cfg.eval_on_load:
+        if self.cfg.load_path is not None and self.cfg.eval_on_load:  # and self.global_step > 0
             eval_metrics = self.eval()
             if wandb.run is not None:
                 wandb.log(eval_metrics, step=self.global_step)
@@ -1048,6 +1050,9 @@ class Trainer:
         stop_at: Optional[int] = self.cfg.stop_at
         save_checkpoints: bool = True
 
+        if stop_at is None and self.max_epochs == 1:
+            stop_at = self.max_steps
+
         with torch_profiler as p:
             for epoch in range(self.epoch or 0, self.max_epochs):
                 for batch in self.train_loader:
@@ -1058,9 +1063,14 @@ class Trainer:
                     # Alternatively we'd have to use a distributed all reduce over seq_len here, but I don't want that
                     # overhead. So for now I'm putting these assertions here so if the assumption is violated it will
                     # fail loudly.
+
                     batch_size, seq_len = batch["input_ids"].shape
-                    assert seq_len == self.cfg.model.max_sequence_length
-                    assert batch_size == self.cfg.device_train_batch_size
+                    assert (
+                        seq_len == self.cfg.model.max_sequence_length
+                    ), f"{seq_len} is not {self.cfg.model.max_sequence_length}"
+                    assert (
+                        batch_size == self.cfg.device_train_batch_size
+                    ), f"{batch_size} is not {self.cfg.device_train_batch_size}"
                     global_batch_size = batch_size * get_world_size()  # assumes batch size equal across ranks
                     self.global_step += 1
                     self.global_train_examples_seen_this_epoch += global_batch_size
@@ -1220,6 +1230,22 @@ class Trainer:
                 log.info("Saving final checkpoint...")
                 checkpoint_path, _ = self.save_checkpoint(CheckpointType.sharded)
                 log.info(f"Checkpoint saved to {checkpoint_path}")
+
+    def save_sequences(self, batch: Dict[str, Any]) -> None:
+        # below are for reading out tokens and save them into json file
+        from .tokenizer import Tokenizer
+        import json
+
+        tokenizer = Tokenizer.from_train_config(self.cfg)
+        sequences = tokenizer.batch_decode(batch["input_ids"].tolist())
+
+        # log.info(self.cfg.data.paths)
+        file_path = str(self.cfg.data.paths[0]).replace("npy", "jsonl")
+        with open(file_path, "a") as file:
+            for s in sequences:
+                json_line = json.dumps({"text": s})
+                file.write(json_line + "\n")
+        log.info(f"Writing {len(sequences)} sequences to {file_path} jsonl file")
 
     def close(self, exit_code: int = 0) -> None:
         gc_cuda()

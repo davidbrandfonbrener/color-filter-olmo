@@ -6,7 +6,7 @@ set -euo pipefail
 
 export NODENAME=$(hostname -s)
 export MASTER_ADDR=$(scontrol show hostnames | head -n 1)
-export MASTER_PORT=39591
+export MASTER_PORT=$(($SLURM_JOB_ID % 907 + 39591))
 export WORLD_SIZE=$SLURM_NTASKS
 export RANK=$SLURM_PROCID
 export FS_LOCAL_RANK=$SLURM_PROCID

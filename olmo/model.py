@@ -982,7 +982,7 @@ class OLMo(nn.Module):
         if not config.weight_tying:
             self.transformer.update(
                 {
-                    "ff_out": nn.Linear(
+                    "ff_out_last": nn.Linear(
                         config.d_model,
                         config.embedding_size or config.vocab_size,
                         bias=config.include_bias,
@@ -1033,8 +1033,8 @@ class OLMo(nn.Module):
         self.transformer.ln_f.reset_parameters()  # type: ignore
 
         # Output weights.
-        if hasattr(self.transformer, "ff_out"):
-            init_weights(self.config, self.transformer.ff_out, type_of_module=ModuleType.final_out)  # type: ignore
+        if hasattr(self.transformer, "ff_out_last"):
+            init_weights(self.config, self.transformer.ff_out_last, type_of_module=ModuleType.final_out)  # type: ignore
 
         # Let the blocks handle themselves.
         if self.config.block_group_size == 1:
@@ -1228,7 +1228,7 @@ class OLMo(nn.Module):
         if self.config.weight_tying:
             logits = F.linear(x, self.transformer.wte.weight, None)  # type: ignore
         else:
-            logits = self.transformer.ff_out(x)  # type: ignore
+            logits = self.transformer.ff_out_last(x)  # type: ignore
         if self.config.scale_logits:
             logits.mul_(1 / math.sqrt(self.config.d_model))
 
@@ -1245,8 +1245,8 @@ class OLMo(nn.Module):
         # So we have to explicitly tell PyTorch which linear layers to wrap, and we also just
         # return True in 'recurse' mode for simplicity.
         size_based_module_to_wrap = {self.transformer.wte}
-        if hasattr(self.transformer, "ff_out"):
-            size_based_module_to_wrap.add(self.transformer.ff_out)
+        if hasattr(self.transformer, "ff_out_last"):
+            size_based_module_to_wrap.add(self.transformer.ff_out_last)
 
         if wrap_strategy == FSDPWrapStrategy.by_block:
 
@@ -1336,7 +1336,7 @@ class OLMo(nn.Module):
         params = (np for np in self.named_parameters())
         if not include_embedding:
             params = filter(  # type: ignore
-                lambda np: ".wte." not in np[0] and ".wpe." not in np[0],
+                lambda np: ".wte." not in np[0] and ".wpe." not in np[0] and "ff_out_last" not in np[0],
                 params,
             )
         return sum(p.numel() for _, p in params)

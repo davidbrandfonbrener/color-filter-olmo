@@ -1,0 +1,183 @@
+run_name: olmo_${oc.env:SLURM_JOB_ID}
+seed: 0
+dry_run: false
+
+max_duration: 24000 # ~3B tokens for batches of 256 x 512
+global_train_batch_size: 256 
+device_train_microbatch_size: 128 # For H100 w/color, need smaller for RHO methods
+
+# TODO: add your own wandb information
+# wandb:
+#   name: ${run_name}
+#   log_interval: ${console_log_interval}
+#   entity: YOUR_ENTITY
+#   project: color-filter
+#   group: debug
+
+model:
+  # 151m non-embedding params
+  d_model: 1024
+  mlp_hidden_size: 4096
+  n_heads: 16
+  n_layers: 12
+  max_sequence_length: 512
+  rope: true
+  attention_layer_norm: true
+  attention_layer_norm_with_affine: true 
+  multi_query_attention: false
+  include_bias: false
+  block_type: sequential
+  layer_norm_type: default
+  layer_norm_with_affine: true 
+  bias_for_layer_norm: false
+  activation_type: gelu 
+  attention_dropout: 0.0
+  residual_dropout: 0.0
+  embedding_dropout: 0.0
+  vocab_size: 50280
+  embedding_size: 50304
+  eos_token_id: 0
+  pad_token_id: 1
+  init_device: meta
+  init_fn: mitchell
+  weight_tying: false
+
+compile:
+  mode: default
+
+precision: amp_bf16
+max_grad_norm: 1.0
+
+fsdp:
+  precision: mixed
+  sharding_strategy: FULL_SHARD
+
+scheduler:
+  name: cosine_with_warmup
+  t_warmup: 1000
+  alpha_f: 0.1
+
+optimizer:
+  name: adamw
+  learning_rate: 1.0e-3
+  weight_decay: 0.0
+  eps: 1e-15
+  betas:
+  - 0.9
+  - 0.95
+  metrics_log_interval: 100
+
+activation_checkpointing: false
+softmax_auxiliary_loss: true
+
+data:
+  paths: our-c4
+  pad_direction: right
+  num_workers: 16 
+  drop_last: true
+  pin_memory: true
+  prefetch_factor: 16
+  persistent_workers: true
+  timeout: 0
+  # extra_data_paths: finetune-150-5-48k-books
+  extra_data_paths: null
+
+tokenizer:
+  identifier: allenai/eleuther-ai-gpt-neox-20b-pii-special 
+  truncate_direction: right
+
+save_folder: ${oc.env:CHECKPOINTS_PATH}/${run_name}
+save_overwrite: true
+# Sharded checkpoints (best for restarts)
+save_interval: 5000
+save_num_checkpoints_to_keep: 1
+# Unsharded checkpoints (for final storage)
+save_interval_unsharded: 100000
+save_num_unsharded_checkpoints_to_keep: 1 # only save last checkpoint
+
+load_path: null
+
+
+speed_monitor:
+  window_size: 1
+
+console_log_interval: 10
+
+eval_interval: 2000
+eval_on_load: false
+eval_subset_num_batches: 100
+device_eval_batch_size: 64
+evaluators:
+  ##########################
+  # Perplexity evaluations #
+  ##########################
+  - label: books
+    data:
+      datasets:
+        books_val: books-val
+      drop_last: true
+
+  ##########################
+  # Train #
+  ##########################
+  
+  - label: piqa_train
+    type: downstream
+
+  - label: openbook_qa_train
+    type: downstream
+
+  - label: hellaswag_train
+    type: downstream
+
+  - label: winogrande_train
+    type: downstream
+  
+  - label: arc_easy_train
+    type: downstream
+  
+  - label: arc_challenge_train
+    type: downstream
+  
+  - label: boolq_train
+    type: downstream
+
+  - label: sciq_train
+    type: downstream
+
+
+  ##########################
+  # Downstream evaluations from OLMO #
+  ##########################
+
+  - label: piqa_test
+    type: downstream
+    subset_num_batches: 1000 # do not subset here
+
+  - label: openbook_qa_test
+    type: downstream
+    subset_num_batches: 1000 # do not subset here
+
+  - label: hellaswag_test     
+    type: downstream
+    subset_num_batches: 1000 # do not subset here
+
+  - label: winogrande_test
+    type: downstream
+    subset_num_batches: 1000 # do not subset here
+
+  - label: arc_easy_test
+    type: downstream
+    subset_num_batches: 1000 # do not subset here
+
+  - label: arc_challenge_test
+    type: downstream
+    subset_num_batches: 1000 # do not subset here
+
+  - label: boolq_test
+    type: downstream
+    subset_num_batches: 1000 # do not subset here
+
+  - label: sciq_test
+    type: downstream
+    subset_num_batches: 1000 # do not subset here

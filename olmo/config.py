@@ -39,7 +39,6 @@ __all__ = [
     "SchedulerType",
     "SchedulerConfig",
     "DataConfig",
-    "InstanceFilterConfig",
     "EvaluatorConfig",
     "TokenizerConfig",
     "TrainConfig",
@@ -468,7 +467,7 @@ class OptimizerConfig(BaseConfig):
     learning_rate: float = 1.0e-4
     weight_decay: float = 0.01
     betas: Tuple[float, float] = (0.9, 0.95)
-    eps: float = 1e-5
+    eps: float = 1e-15
 
     no_decay_norm_and_bias: Optional[bool] = None
     """
@@ -547,17 +546,9 @@ class PaddingDirection(StrEnum):
 
 
 @dataclass
-class InstanceFilterConfig(BaseConfig):
-    repetition_max_period: int = 13
-    repetition_min_period: int = 1
-    repetition_max_count: int = 32
-
-
-@dataclass
 class DataConfig(BaseConfig):
-    paths: Optional[List[str]] = None
-    memmap_dtype: str = "uint16"
-    datasets: Optional[Dict[str, List[str]]] = None
+    paths: Optional[Any] = None
+    datasets: Optional[Dict[str, Any]] = None
     label_mask_paths: Optional[List[str]] = None
     pad_direction: PaddingDirection = PaddingDirection.right
     generate_attention_mask: bool = False
@@ -568,7 +559,7 @@ class DataConfig(BaseConfig):
     persistent_workers: bool = False
     timeout: int = 0
     seed: Optional[int] = None
-    instance_filter: Optional[InstanceFilterConfig] = None
+    memmap_dtype: str = "uint16"
 
     @property
     def effective_memmap_dtype(self):
@@ -583,6 +574,14 @@ class DataConfig(BaseConfig):
         # default to uint16 if not set
         return np.uint16
 
+    extra_data_paths: Optional[Any] = None
+    """
+    Path to load extra batch data dict from.
+    """
+    extra_data_key: Optional[str] = None  # Default to score
+    load_extra_data_to_ram: bool = False
+    index_path: Optional[str] = None  # Path to a fixed index
+
 
 class EvaluatorType(StrEnum):
     downstream = "downstream"
@@ -596,6 +595,8 @@ class EvaluatorConfig(BaseConfig):
     data: DataConfig = field(default_factory=DataConfig)
     device_eval_batch_size: Optional[int] = None
     subset_num_batches: Optional[int] = None
+    sft_use_label: bool = False
+    sft: bool = False
 
 
 class TruncationDirection(StrEnum):
@@ -774,7 +775,31 @@ class ActivationCheckpointingStrategy(StrEnum):
 @dataclass
 class TrainConfig(BaseConfig):
     """
-    OLMo training configuration.
+    OUR NEW PARAMETERS
+    """
+
+    just_score_model: bool = False
+    """
+    If True, then we only score the model, we do not train anything
+    """
+
+    tau: Optional[float] = None
+    """
+    Selection multiplier when creating selection index. Only used when just_score_model=True
+    """
+
+    data_start_step: Optional[int] = None
+    """
+    If not none, set the start index to a specific value. If none, start at 0.
+    """
+
+    sft_dataset: Optional[EvaluatorConfig] = None
+    """
+    Configs for finetuning on downstream datasets.
+    """
+
+    """
+    Original OLMo training configuration.
     """
 
     run_name: Optional[str] = None

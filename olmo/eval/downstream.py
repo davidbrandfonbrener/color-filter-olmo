@@ -11,6 +11,8 @@ from torchmetrics import Metric
 
 from ..tokenizer import Tokenizer
 
+from tqdm.auto import tqdm
+
 log = logging.getLogger(__name__)
 
 
@@ -40,6 +42,12 @@ class ICLMetric(Metric):
             assert dc_lm_logits is not None, "PMI_DC acc type selected but no domain conditional logits provided"
 
         for idx, (doc_id, cont_id) in enumerate(zip(batch["doc_id"], batch["cont_id"])):
+            if batch["ctx_len"][idx] < 0:
+                print(f"Bad batch ctx_len {batch['ctx_len'][idx]}")
+                continue
+            if batch["cont_len"][idx] > lm_logits.shape[1]:
+                print(f"Bad batch cont_len {batch['cont_len'][idx]}")
+                continue
             # [cont_len]: continuation is padded for batching
             cont_tokens = batch["continuation"][idx][: batch["cont_len"][idx]]
             # get logits from LM for the continuation: [cont_len, vocab]
@@ -146,8 +154,7 @@ class ICLMetric(Metric):
 
         return torch.tensor(score)
 
-
-class ICLMultiChoiceTaskDataset(metaclass=abc.ABCMeta):
+class OlmoDataset(metaclass=abc.ABCMeta):
     """Only supports zero-shot for now."""
 
     metric_type: ClassVar[str]
@@ -160,6 +167,8 @@ class ICLMultiChoiceTaskDataset(metaclass=abc.ABCMeta):
         model_ctx_len: int = 2048,
         split="validation",
         prompts=[None],  # List of prompt variants to use
+        sft: bool = False,
+        sft_use_label: bool = True,
     ):
         super().__init__()
 
@@ -170,6 +179,8 @@ class ICLMultiChoiceTaskDataset(metaclass=abc.ABCMeta):
         self.prompts = prompts
         self.current_prompt = None
         self.log_instances = 0  # Set to > 0 to log the first few instances as a sanity check
+        self.sft = sft
+        self.sft_use_label = sft_use_label
 
         self.samples: List[Dict[str, Any]] = []
         dataset_names: Sequence[Optional[str]]
@@ -180,88 +191,24 @@ class ICLMultiChoiceTaskDataset(metaclass=abc.ABCMeta):
 
         dataset_list = []
         for ds_name in dataset_names:
-            dataset_list.append(
-                datasets.load_dataset(
-                    path=self.dataset_path,
-                    name=ds_name,
-                    split=split,
-                    trust_remote_code=True,
-                )
+            dataset = datasets.load_dataset(
+                path=self.dataset_path,
+                name=ds_name,
+                split=split,
+                trust_remote_code=True,
             )
+            if "cais" in self.dataset_path:
+                # for i, data in enumerate(dataset):
+                dataset = dataset["train"]
+                dataset = datasets.Dataset.from_list(dataset)
+            dataset_list.append(dataset)
         self.dataset = datasets.concatenate_datasets(dataset_list)
 
-        # prep examples
-        self.prep_examples()
-
     def __getitem__(self, index):
-        return self.samples[index]
+        raise NotImplementedError
 
     def __len__(self):
-        return len(self.samples)
-
-    def prep_examples(self):
-        """Append doc_ids to each example so that they are processed together in the metric"""
-        doc_id = 0
-        for doc in self.dataset:
-            for prompt in self.prompts:
-                self.current_prompt = prompt
-                # from EAI harness
-                # how this all works:
-                #          CTX      CONT
-                # inp    0 1 2 3|4 5 6 7 8 9   <- last token is deleted by inp[:, :-1]
-                # gpt2    \               \
-                # logits   1 2 3|4 5 6 7 8 9   <- the ctx half gets tossed out by the
-                # cont_toks      4 5 6 7 8 9      [:, -len(continuation_enc):, :self.vocab_size] slice
-
-                continuations = self.doc_to_continuations(doc)
-                label_id = self.doc_to_label(doc)
-                doc_text = self.doc_to_text(doc)
-                ctx = self.token_encode(doc_text)
-                dc = self.token_encode(self.doc_to_domain_conditional(doc))
-                if self.log_instances > 0:
-                    self.log_instances -= 1
-                    ds_name = self.dataset_name
-                    if isinstance(ds_name, list):
-                        ds_name = ds_name[0]
-                    log.info(
-                        f"Sample doc from ({self.dataset_path}, {ds_name}, {self.current_prompt}):"
-                        + f"\ndoc_text: {doc_text}\ncontinuations: {continuations}"
-                    )
-
-                for cont_id, continuation_str in enumerate(continuations):
-                    cont_str_len = len(continuation_str) - 1  # continuation contain leading blank
-                    continuation = self.token_encode(continuation_str)
-
-                    # query, remove last token from continuation, truncate from left is longer than model ctx length
-                    query = ctx + continuation[:-1]
-                    query = query[-self.model_ctx_len :]
-                    # this will be different from len(ctx) when truncated by model_ctx_len
-                    actual_ctx_len = len(query) - len(continuation) + 1
-
-                    # get domain conditional query
-                    # we don't expect this to be longer than self.model_ctx_len and it won't make sense to truncate from left
-                    dc_query = dc + continuation[:-1]
-
-                    # form a sample
-                    self.samples.append(
-                        {
-                            "doc_id": doc_id,
-                            "cont_id": cont_id,
-                            "ctx": ctx,
-                            "continuation": continuation,
-                            "ctx_len": actual_ctx_len,
-                            "dc_len": len(dc),
-                            "cont_len": len(
-                                continuation
-                            ),  # even if query has last token removed, LM will output same cont len
-                            "cont_str_len": cont_str_len,
-                            "query": query,  # remove last token from continuation
-                            "dc_query": dc_query,
-                            "label_id": label_id,
-                        }
-                    )
-
-                doc_id += 1
+        raise NotImplementedError
 
     def pad_tokens_until_max(self, tokens, max_len=2048):
         """truncate from left if len(tokens) > model_ctx_len, max_len is not considered then
@@ -280,7 +227,184 @@ class ICLMultiChoiceTaskDataset(metaclass=abc.ABCMeta):
 
             return tokens
 
+    def token_encode(self, string: str) -> List[int]:
+        return self.tokenizer.encode(string, add_special_tokens=False)
+
+    def token_decode(self, tokens: List[int]) -> str:
+        return self.tokenizer.decode(tokens)
+
+    def prep_examples(self):
+        """Append doc_ids to each example so that they are processed together in the metric"""
+        raise NotImplementedError
+
     def collate_fn(self, data):
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def doc_to_text(self, doc) -> str:
+        """Match EAI eval harness
+        returns a single context string
+        """
+        raise NotImplementedError
+
+    # @abc.abstractmethod
+    def doc_to_continuations(self, doc) -> List[str]:
+        """Match EAI eval harness
+        returns a list of continuations
+        """
+        raise NotImplementedError
+
+    def doc_to_solution(self, doc) -> List[str]:
+        """For code evaluation, returns a list of solutions
+        returns a list of solutions
+        """
+        raise NotImplementedError
+
+    # @abc.abstractmethod
+    def doc_to_label(self, doc) -> int:
+        """Match EAI eval harness
+        returns continuation id which corresponds to true label
+        """
+        raise NotImplementedError
+
+    def doc_to_domain_conditional(self, doc) -> str:
+        """Provide string for domain conditional normalization
+        by default its blank string, continuation normalized by prob conditioned on a blank
+        """
+        del doc
+        return " "
+
+    def doc_to_task_id(self, doc) -> str:
+        """Provide task id for the document"""
+        return doc["task_id"]
+
+    def doc_to_sft(self, doc):
+        sft_example = self.doc_to_text(doc) + self.doc_to_continuations(doc)[self.doc_to_label(doc)]
+        return sft_example
+
+    def doc_to_sft_without_answer(self, doc):
+        return self.doc_to_text(doc)
+
+
+class ICLMultiChoiceTaskDataset(OlmoDataset):
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        dataset_path: str,
+        dataset_name: Union[str, Sequence[str], None] = None,
+        model_ctx_len: int = 2048,
+        split="validation",
+        prompts=[None],
+        sft: bool = False,
+        sft_use_label: bool = True,
+    ):
+        super().__init__(tokenizer, dataset_path, dataset_name, model_ctx_len, split, prompts, sft, sft_use_label)
+        self.prep_examples()
+
+    def prep_examples(self):
+        token_count = 0
+        for doc_id, doc in tqdm(enumerate(self.dataset)):
+            for prompt in self.prompts:
+                self.current_prompt = prompt
+                # from EAI harness
+                # how this all works:
+                #          CTX      CONT
+                # inp    0 1 2 3|4 5 6 7 8 9   <- last token is deleted by inp[:, :-1]
+                # gpt2    \               \
+                # logits   1 2 3|4 5 6 7 8 9   <- the ctx half gets tossed out by the
+                # cont_toks      4 5 6 7 8 9      [:, -len(continuation_enc):, :self.vocab_size] slice
+
+                continuations = self.doc_to_continuations(doc)
+                label_id = self.doc_to_label(doc)
+                doc_text = self.doc_to_text(doc)
+                ctx = self.token_encode(doc_text)
+
+                if self.sft:
+                    if self.sft_use_label:
+                        sft_text = self.doc_to_sft(doc)
+                    else:
+                        sft_text = self.doc_to_sft_without_answer(doc)
+                    sft = self.token_encode(sft_text)
+                    token_count += len(sft)
+                    # form a sample (Hack-y)
+                    self.samples.append({"doc_id": doc_id, "label_id": label_id, "sft": sft})
+
+                else:
+                    dc = self.token_encode(self.doc_to_domain_conditional(doc))
+                    if self.log_instances > 0:
+                        self.log_instances -= 1
+                        ds_name = self.dataset_name
+                        if isinstance(ds_name, list):
+                            ds_name = ds_name[0]
+                        log.info(
+                            f"Sample doc from ({self.dataset_path}, {ds_name}, {self.current_prompt}):"
+                            + f"\ndoc_text: {doc_text}\ncontinuations: {continuations}"
+                        )
+
+                    for cont_id, continuation_str in enumerate(continuations):
+                        cont_str_len = len(continuation_str) - 1  # continuation contain leading blank
+                        continuation = self.token_encode(continuation_str)
+
+                        # query, remove last token from continuation, truncate from left is longer than model ctx length
+                        query = ctx + continuation[:-1]
+                        query = query[-self.model_ctx_len :]
+                        # this will be different from len(ctx) when truncated by model_ctx_len
+                        actual_ctx_len = len(query) - len(continuation) + 1
+
+                        # get domain conditional query
+                        # we don't expect this to be longer than self.model_ctx_len and it won't make sense to truncate from left
+                        dc_query = dc + continuation[:-1]
+
+                        # form a sample
+                        self.samples.append(
+                            {
+                                "doc_id": doc_id,
+                                "cont_id": cont_id,
+                                "ctx": ctx,
+                                "continuation": continuation,
+                                "ctx_len": actual_ctx_len,
+                                "dc_len": len(dc),
+                                "cont_len": len(
+                                    continuation
+                                ),  # even if query has last token removed, LM will output same cont len
+                                "cont_str_len": cont_str_len,
+                                "query": query,  # remove last token from continuation
+                                "dc_query": dc_query,
+                                "label_id": label_id,
+                            }
+                        )
+        print(f"Total tokens for SFT: {token_count}")
+
+    def sft_collate_fn(self, data):
+        # pad to max length
+        # 'ctx', 'continuation', 'query' can all have variable length
+        max_sft_len = self.model_ctx_len
+
+        for sample in data:
+            if len(sample["sft"]) > max_sft_len:
+                max_sft_len = len(sample["sft"])
+
+        doc_ids = []
+        label_ids = []
+        sfts = []
+
+        # pad according to max_lengths
+        for sample in data:
+            doc_ids.append(sample["doc_id"])
+            label_ids.append(sample["label_id"])
+            sfts.append(torch.LongTensor(self.pad_tokens_until_max(sample["sft"], max_len=max_sft_len)))
+
+        batch = {
+            "doc_id": torch.LongTensor(doc_ids),
+            "input_ids": torch.stack(sfts),
+            "label_id": torch.LongTensor(label_ids),
+        }
+        return batch
+
+    def collate_fn(self, data):
+        if self.sft:
+            return self.sft_collate_fn(data)
+
         # pad to max length
         # 'ctx', 'continuation', 'query' can all have variable length
         max_ctx_len = 0
@@ -351,39 +475,11 @@ class ICLMultiChoiceTaskDataset(metaclass=abc.ABCMeta):
 
         return batch
 
-    def token_encode(self, string: str) -> List[int]:
-        return self.tokenizer.encode(string, add_special_tokens=False)
+    def __getitem__(self, index):
+        return self.samples[index]
 
-    def token_decode(self, tokens: List[int]) -> str:
-        return self.tokenizer.decode(tokens)
-
-    @abc.abstractmethod
-    def doc_to_text(self, doc) -> str:
-        """Match EAI eval harness
-        returns a single context string
-        """
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def doc_to_continuations(self, doc) -> List[str]:
-        """Match EAI eval harness
-        returns a list of continuations
-        """
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def doc_to_label(self, doc) -> int:
-        """Match EAI eval harness
-        returns continuation id which corresponds to true label
-        """
-        raise NotImplementedError
-
-    def doc_to_domain_conditional(self, doc) -> str:
-        """Provide string for domain conditional normalization
-        by default its blank string, continuation normalized by prob conditioned on a blank
-        """
-        del doc
-        return " "
+    def __len__(self):
+        return len(self.samples)
 
 
 class PIQA(ICLMultiChoiceTaskDataset):
@@ -402,11 +498,24 @@ class PIQA(ICLMultiChoiceTaskDataset):
 
     metric_type = "len_norm"
 
-    def __init__(self, tokenizer, dataset_path="piqa", dataset_name="plain_text"):
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="piqa",
+        dataset_name=None,
+        sft: bool = False,
+        sft_use_label: bool = True,
+        model_ctx_len: int = 2048,
+        split: str = "validation",
+    ):
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
             dataset_name=dataset_name,
+            sft=sft,
+            sft_use_label=sft_use_label,
+            model_ctx_len=model_ctx_len,
+            split=split,
         )
 
     def doc_to_text(self, doc):
@@ -440,11 +549,24 @@ class HellaSwag(ICLMultiChoiceTaskDataset):
 
     metric_type = "len_norm"
 
-    def __init__(self, tokenizer, dataset_path="hellaswag", dataset_name=None):
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="hellaswag",
+        dataset_name=None,
+        sft: bool = False,
+        sft_use_label: bool = True,
+        model_ctx_len: int = 2048,
+        split="validation",
+    ):
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
             dataset_name=dataset_name,
+            sft=sft,
+            sft_use_label=sft_use_label,
+            model_ctx_len=model_ctx_len,
+            split=split,
         )
 
     @classmethod
@@ -498,61 +620,88 @@ class WinoGrande(ICLMultiChoiceTaskDataset):
 
     metric_type = "acc"
 
-    def __init__(self, tokenizer, dataset_path="winogrande", dataset_name="winogrande_xl"):
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="winogrande",
+        dataset_name="winogrande_xl",
+        sft: bool = False,
+        sft_use_label: bool = True,
+        model_ctx_len: int = 2048,
+        split: str = "validation",
+    ):
         # all winogrande datasets have same val set
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
             dataset_name=dataset_name,
+            split=split,
+            sft=sft,
+            sft_use_label=sft_use_label,
+            model_ctx_len=model_ctx_len,
         )
 
     def prep_examples(self):
         """Overwrite for WinoGrande as multiple ctx, single continuation"""
         doc_id = 0
-        for doc in self.dataset:
-            # here ctx is a list
-            ctxs = self.doc_to_text(doc)
-            dcs = self.doc_to_domain_conditional(doc)
+        token_count = 0
+        for doc in tqdm(self.dataset):
+            if self.sft:
+                if self.sft_use_label:
+                    sft_text = self.doc_to_sft(doc)
+                else:
+                    sft_text = self.doc_to_sft_without_answer(doc)
+                sft = self.token_encode(sft_text)
+                token_count += len(sft)
+                # form a sample (Hack-y)
+                self.samples.append({"doc_id": doc_id, "label_id": self.doc_to_label(doc), "sft": sft})
 
-            continuation = self.doc_to_continuations(doc)
-            label_id = self.doc_to_label(doc)
-            cont_str_len = len(continuation) - 1  # continuations contain leading blank space
+            else:
+                # here ctx is a list
+                ctxs = self.doc_to_text(doc)
+                dcs = self.doc_to_domain_conditional(doc)
 
-            # tokenize
-            continuation = self.token_encode(continuation)
+                continuation = self.doc_to_continuations(doc)
+                label_id = self.doc_to_label(doc)
+                cont_str_len = len(continuation) - 1  # continuations contain leading blank space
 
-            for cont_id, (ctx, dc) in enumerate(zip(ctxs, dcs)):
-                ctx = self.token_encode(ctx)
-                dc = self.token_encode(dc)
+                # tokenize
+                continuation = self.token_encode(continuation)
 
-                # query, remove last token from continuation, truncate from left is longer than model ctx length
-                query = ctx + continuation[:-1]
-                query = query[-self.model_ctx_len :]
+                for cont_id, (ctx, dc) in enumerate(zip(ctxs, dcs)):
+                    ctx = self.token_encode(ctx)
+                    dc = self.token_encode(dc)
 
-                # get domain conditional query
-                # we don't expect this to be longer than self.model_ctx_len and it won't make sense to truncate from left
-                dc_query = dc + continuation[:-1]
+                    # query, remove last token from continuation, truncate from left is longer than model ctx length
+                    query = ctx + continuation[:-1]
+                    query = query[-self.model_ctx_len :]
 
-                # form a sample
-                self.samples.append(
-                    {
-                        "doc_id": doc_id,
-                        "cont_id": cont_id,
-                        "ctx": ctx,
-                        "continuation": continuation,
-                        "ctx_len": len(ctx),
-                        "dc_len": len(dc),
-                        "cont_len": len(
-                            continuation
-                        ),  # even if query has last token removed, LM will output same cont len
-                        "cont_str_len": cont_str_len,
-                        "query": query,  # remove last token from continuation
-                        "dc_query": dc_query,
-                        "label_id": label_id,
-                    }
-                )
+                    # get domain conditional query
+                    # we don't expect this to be longer than self.model_ctx_len and it won't make sense to truncate from left
+                    dc_query = dc + continuation[:-1]
+
+                    # form a sample
+                    self.samples.append(
+                        {
+                            "doc_id": doc_id,
+                            "cont_id": cont_id,
+                            "ctx": ctx,
+                            "continuation": continuation,
+                            "ctx_len": len(ctx),
+                            "dc_len": len(dc),
+                            "cont_len": len(
+                                continuation
+                            ),  # even if query has last token removed, LM will output same cont len
+                            "cont_str_len": cont_str_len,
+                            "query": query,  # remove last token from continuation
+                            "dc_query": dc_query,
+                            "label_id": label_id,
+                            "sft": None,
+                        }
+                    )
 
             doc_id += 1
+        print(f"Total tokens for SFT: {token_count}")
 
     def doc_to_text(self, doc):
         # special case where there are multiple ctx and single continuation
@@ -576,6 +725,14 @@ class WinoGrande(ICLMultiChoiceTaskDataset):
         """same number of domain conditionals as context"""
         return [doc["option1"], doc["option2"]]
 
+    def doc_to_sft(self, doc):
+        ctx = self.doc_to_text(doc)[self.doc_to_label(doc)]  # Correct first half of sentence
+        sft_example = ctx + self.doc_to_continuations(doc)  # Add second half
+        return sft_example
+
+    def doc_to_sft_without_answer(self, doc):
+        raise NotImplementedError
+
 
 class OpenBookQA(ICLMultiChoiceTaskDataset):
     """OBQA: question_stem is sent as context (no special prompt format) and choices are sent as continuation
@@ -593,11 +750,24 @@ class OpenBookQA(ICLMultiChoiceTaskDataset):
 
     metric_type = "len_norm"
 
-    def __init__(self, tokenizer, dataset_path="openbookqa", dataset_name="main"):
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="openbookqa",
+        dataset_name="main",
+        sft: bool = False,
+        sft_use_label: bool = True,
+        model_ctx_len: int = 2048,
+        split: str = "validation",
+    ):
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
             dataset_name=dataset_name,
+            sft=sft,
+            sft_use_label=sft_use_label,
+            model_ctx_len=model_ctx_len,
+            split=split,
         )
 
     def doc_to_text(self, doc):
@@ -628,11 +798,24 @@ class BoolQ(ICLMultiChoiceTaskDataset):
 
     metric_type = "acc"
 
-    def __init__(self, tokenizer, dataset_path="boolq", dataset_name=None):
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="boolq",
+        dataset_name=None,
+        sft: bool = False,
+        sft_use_label: bool = True,
+        model_ctx_len: int = 2048,
+        split: str = "validation",
+    ):
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
             dataset_name=dataset_name,
+            sft=sft,
+            sft_use_label=sft_use_label,
+            model_ctx_len=model_ctx_len,
+            split=split,
         )
 
     def doc_to_text(self, doc):
@@ -673,11 +856,24 @@ class SciQ(ICLMultiChoiceTaskDataset):
 
     metric_type = "acc"
 
-    def __init__(self, tokenizer, dataset_path="sciq", dataset_name=None):
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="sciq",
+        dataset_name=None,
+        sft: bool = False,
+        sft_use_label: bool = True,
+        model_ctx_len: int = 2048,
+        split: str = "validation",
+    ):
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
             dataset_name=dataset_name,
+            sft=sft,
+            sft_use_label=sft_use_label,
+            model_ctx_len=model_ctx_len,
+            split=split,
         )
 
     def doc_to_text(self, doc):
@@ -715,11 +911,24 @@ class ArcEasy(ICLMultiChoiceTaskDataset):
 
     metric_type = "acc"
 
-    def __init__(self, tokenizer, dataset_path="ai2_arc", dataset_name="ARC-Easy"):
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="ai2_arc",
+        dataset_name="ARC-Easy",
+        sft: bool = False,
+        sft_use_label: bool = True,
+        model_ctx_len: int = 2048,
+        split: str = "validation",
+    ):
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
             dataset_name=dataset_name,
+            sft=sft,
+            sft_use_label=sft_use_label,
+            model_ctx_len=model_ctx_len,
+            split=split,
         )
 
     def doc_to_text(self, doc):
@@ -750,11 +959,24 @@ class ArcChallenge(ArcEasy):
 
     metric_type = "len_norm"  # Ideally "pmi_dc"
 
-    def __init__(self, tokenizer, dataset_path="ai2_arc", dataset_name="ARC-Challenge"):
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="ai2_arc",
+        dataset_name="ARC-Challenge",
+        sft: bool = False,
+        sft_use_label: bool = True,
+        model_ctx_len: int = 2048,
+        split: str = "validation",
+    ):
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
             dataset_name=dataset_name,
+            split=split,
+            sft=sft,
+            sft_use_label=sft_use_label,
+            model_ctx_len=model_ctx_len,
         )
 
 
@@ -785,12 +1007,16 @@ class BasicArithmetic(ArcEasy):
 
     metric_type = "acc"
 
-    def __init__(self, tokenizer, dataset_path="allenai/basic_arithmetic", dataset_name=None):
-        super().__init__(
-            tokenizer=tokenizer,
-            dataset_path=dataset_path,
-            dataset_name=dataset_name,
-        )
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="allenai/basic_arithmetic",
+        dataset_name=None,
+        sft: bool = False,
+        sft_use_label: bool = True,
+        split: str = "validation",
+    ):
+        super().__init__(tokenizer=tokenizer, dataset_path=dataset_path, dataset_name=dataset_name, split=split)
 
 
 class CommonsenseQA(ArcEasy):
@@ -806,11 +1032,20 @@ class CommonsenseQA(ArcEasy):
 
     metric_type = "len_norm"
 
-    def __init__(self, tokenizer, dataset_path="tau/commonsense_qa", dataset_name=None):
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="tau/commonsense_qa",
+        dataset_name=None,
+        sft: bool = False,
+        sft_use_label: bool = True,
+        split: str = "validation",
+    ):
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
             dataset_name=dataset_name,
+            split=split,
         )
 
 
@@ -826,11 +1061,20 @@ class SocialIQa(ICLMultiChoiceTaskDataset):
 
     metric_type = "len_norm"
 
-    def __init__(self, tokenizer, dataset_path="social_i_qa", dataset_name=None):
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="social_i_qa",
+        dataset_name=None,
+        sft: bool = False,
+        sft_use_label: bool = True,
+        split: str = "validation",
+    ):
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
             dataset_name=dataset_name,
+            split=split,
         )
 
     def doc_to_text(self, doc):
@@ -873,11 +1117,24 @@ class COPA(ICLMultiChoiceTaskDataset):
 
     metric_type = "acc"
 
-    def __init__(self, tokenizer, dataset_path="super_glue", dataset_name="copa"):
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="super_glue",
+        dataset_name="copa",
+        sft: bool = False,
+        sft_use_label: bool = True,
+        model_ctx_len: int = 2048,
+        split: str = "validation",
+    ):
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
             dataset_name=dataset_name,
+            sft=sft,
+            sft_use_label=sft_use_label,
+            model_ctx_len=model_ctx_len,
+            split=split,
         )
 
     def doc_to_text(self, doc):
@@ -915,7 +1172,9 @@ class RTE(ICLMultiChoiceTaskDataset):
 
     metric_type = "len_norm"
 
-    def __init__(self, tokenizer, dataset_path="glue", dataset_name="rte"):
+    def __init__(
+        self, tokenizer, dataset_path="glue", dataset_name="rte", sft: bool = False, sft_use_label: bool = True
+    ):
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
@@ -954,12 +1213,16 @@ class CommitmentBank(ICLMultiChoiceTaskDataset):
 
     metric_type = "acc"
 
-    def __init__(self, tokenizer, dataset_path="super_glue", dataset_name="cb"):
-        super().__init__(
-            tokenizer=tokenizer,
-            dataset_path=dataset_path,
-            dataset_name=dataset_name,
-        )
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="super_glue",
+        dataset_name="cb",
+        sft: bool = False,
+        sft_use_label: bool = True,
+        split: str = "validation",
+    ):
+        super().__init__(tokenizer=tokenizer, dataset_path=dataset_path, dataset_name=dataset_name, split=split)
 
     def doc_to_text(self, doc):
         return doc["premise"] + "\nQuestion: " + doc["hypothesis"] + ". True, False or Neither?\nAnswer:"
@@ -991,12 +1254,16 @@ class MRPC(ICLMultiChoiceTaskDataset):
 
     metric_type = "f1"
 
-    def __init__(self, tokenizer, dataset_path="glue", dataset_name="mrpc"):
-        super().__init__(
-            tokenizer=tokenizer,
-            dataset_path=dataset_path,
-            dataset_name=dataset_name,
-        )
+    def __init__(
+        self,
+        tokenizer,
+        dataset_path="glue",
+        dataset_name="mrpc",
+        sft: bool = False,
+        sft_use_label: bool = True,
+        split: str = "validation",
+    ):
+        super().__init__(tokenizer=tokenizer, dataset_path=dataset_path, dataset_name=dataset_name, split=split)
 
     @classmethod
     def preprocess(cls, string: str) -> str:
@@ -1056,7 +1323,9 @@ class SST2(ICLMultiChoiceTaskDataset):
 
     metric_type = "acc"
 
-    def __init__(self, tokenizer, dataset_path="glue", dataset_name="sst2"):
+    def __init__(
+        self, tokenizer, dataset_path="glue", dataset_name="sst2", sft: bool = False, sft_use_label: bool = True
+    ):
         super().__init__(
             tokenizer=tokenizer,
             dataset_path=dataset_path,
@@ -1165,6 +1434,7 @@ class MMLU(ICLMultiChoiceTaskDataset):
         "us_foreign_policy": ["politics"],
         "virology": ["health"],
         "world_religions": ["philosophy"],
+        "auxiliary_train": ["auxiliary_train"],
     }
 
     _categories = {
@@ -1172,6 +1442,7 @@ class MMLU(ICLMultiChoiceTaskDataset):
         "humanities": ["history", "philosophy", "law"],
         "social_sciences": ["politics", "culture", "economics", "geography", "psychology"],
         "other": ["other", "business", "health"],
+        "auxiliary_train": ["auxiliary_train"],
     }
 
     def __init__(
@@ -1182,6 +1453,9 @@ class MMLU(ICLMultiChoiceTaskDataset):
         split="validation",
         prompt_variations=None,
         mc_labels=False,
+        sft=False,
+        sft_use_label=True,
+        model_ctx_len=2048,
     ):
         dataset_names = []
         # Collect the relevant categories
@@ -1217,6 +1491,9 @@ class MMLU(ICLMultiChoiceTaskDataset):
             dataset_name=dataset_names,
             split=split,
             prompts=prompts,
+            sft=sft,
+            sft_use_label=sft_use_label,
+            model_ctx_len=model_ctx_len,
         )
 
     def doc_to_text(self, doc):
@@ -1267,98 +1544,54 @@ class MMLU(ICLMultiChoiceTaskDataset):
         del doc
         return "Answer:"
 
+    def doc_to_sft(self, doc):
+        sft_example = self.doc_to_text(doc) + self.doc_to_continuations(doc)[self.doc_to_label(doc)]
+        return sft_example
 
-class TriviaQACELoss(ICLMultiChoiceTaskDataset):
-    """Sample TriviaQA entity with some fields suppressed. For CE Loss we only consider the "value"
-    field as the answer to score.
-
-    {
-        'question': 'Which Lloyd Webber musical premiered in the US on 10th December 1993?',
-        'question_id': 'tc_33',
-        'answer': {
-            'aliases': ['Sunset Blvd', ...],
-            'normalized_aliases': ['sunset boulevard', ...],
-            'normalized_value': 'sunset boulevard',
-            'value': 'Sunset Boulevard'
-        }
-    }
-    """
-
-    metric_type = "ce_loss"
-
-    def __init__(self, tokenizer, dataset_path="trivia_qa", dataset_name="rc.wikipedia.nocontext"):
-        super().__init__(
-            tokenizer=tokenizer,
-            dataset_path=dataset_path,
-            dataset_name=dataset_name,
-        )
-
-    def doc_to_text(self, doc):
-        return "\nQuestion: " + doc["question"] + "\nAnswer:"
-
-    def doc_to_continuations(self, doc):
-        return [" " + doc["answer"]["value"]]
-
-    def doc_to_label(self, doc):
-        return 0
-
-    def doc_to_domain_conditional(self, doc):
-        del doc
-        return "Answer:"
-
-
-class NaturalQuestionsCELoss(ICLMultiChoiceTaskDataset):
-    """Sample NaturalQuestions entity. For CE Loss we only consider the first answer entry to score.
-
-    {
-        'question': 'when was the last time anyone was on the moon',
-        'answer': ['14 December 1972 UTC', 'December 1972']
-    }
-    """
-
-    metric_type = "ce_loss"
-
-    def __init__(self, tokenizer, dataset_path="nq_open", dataset_name=None):
-        super().__init__(
-            tokenizer=tokenizer,
-            dataset_path=dataset_path,
-            dataset_name=dataset_name,
-        )
-
-    def doc_to_text(self, doc):
-        return "\nQuestion: " + doc["question"] + "\nAnswer:"
-
-    def doc_to_continuations(self, doc):
-        return [" " + doc["answer"][0]]
-
-    def doc_to_label(self, doc):
-        return 0
-
-    def doc_to_domain_conditional(self, doc):
-        del doc
-        return "Answer:"
+    def doc_to_sft_without_answer(self, doc):
+        return self.doc_to_text(doc)
 
 
 label_to_task_map = {
-    "piqa": PIQA,
-    "hellaswag": HellaSwag,
-    "winogrande": WinoGrande,
-    "openbook_qa": OpenBookQA,
-    "boolq": BoolQ,
-    "sciq": SciQ,
-    "arc_easy": ArcEasy,
-    "arc_easy_ppl": ArcEasyCELoss,
-    "arc_challenge": ArcChallenge,
+    "piqa": PIQA,  # 2k
+    "piqa_train": (PIQA, {"split": "train"}),  # 16k
+    "piqa_test": PIQA,  # 3k, note no access to real test labels
+    "hellaswag": HellaSwag,  # 10k
+    "hellaswag_train": (HellaSwag, {"split": "train"}),  # 40k
+    "hellaswag_test": HellaSwag,  # 10k, note no access to real test labels
+    "winogrande": WinoGrande,  # 1k
+    "winogrande_train": (WinoGrande, {"split": "train"}),  # 40k
+    "winogrande_test": WinoGrande,  # 2k, note no access to real test labels
+    "openbook_qa": OpenBookQA,  # 500
+    "openbook_qa_train": (OpenBookQA, {"split": "train"}),  # 5k
+    "openbook_qa_test": (OpenBookQA, {"split": "test"}),  # 500
+    "boolq": BoolQ,  # 3k
+    "boolq_test": BoolQ,  # 3k
+    "boolq_train": (BoolQ, {"split": "train"}),  # 10k
+    "sciq": SciQ,  # 1k
+    "sciq_train": (SciQ, {"split": "train"}),  # 12k
+    "sciq_test": (SciQ, {"split": "test"}),  # 1k
+    "arc_easy": ArcEasy,  # 500
+    "arc_easy_train": (ArcEasy, {"split": "train"}),  # 3k
+    "arc_easy_test": (ArcEasy, {"split": "test"}),  # 2k
+    "arc_challenge": ArcChallenge,  # 300
+    "arc_challenge_train": (ArcChallenge, {"split": "train"}),  # 1k
+    "arc_challenge_test": (ArcChallenge, {"split": "test"}),  # 1k
+    # Not using things below here
     "basic_arithmetic": BasicArithmetic,
     "copa": COPA,
+    "copa_train": (COPA, {"split": "train"}),
+    "copa_test": (COPA, {"split": "test"}),
     "rte": RTE,
     "commitment_bank": CommitmentBank,
     "mrpc": MRPC,
     "sst2": SST2,
     "commonsense_qa": CommonsenseQA,
     "social_iqa": SocialIQa,
-    "trivia_qa_wiki_ppl": TriviaQACELoss,
-    "natural_qs_open_ppl": NaturalQuestionsCELoss,
+    "mmlu_auxiliary_train": (
+        MMLU,
+        {"dataset_path": "cais/mmlu", "dataset_name": "auxiliary_train", "split": "train"},
+    ),
     "mmlu_stem_test": (MMLU, {"dataset_name": "stem", "split": "test"}),
     "mmlu_humanities_test": (MMLU, {"dataset_name": "humanities", "split": "test"}),
     "mmlu_social_sciences_test": (MMLU, {"dataset_name": "social_sciences", "split": "test"}),

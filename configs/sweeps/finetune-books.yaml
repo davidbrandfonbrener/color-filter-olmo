@@ -1,0 +1,20 @@
+# 1 jobs
+# wandb:
+#   group: ft-books
+
+restore_dataloader: false
+reset_optimizer_state: true
+reset_trainer_state: true
+load_path: prior
+max_duration: 1ep
+optimizer:
+  learning_rate: 1.0e-3
+eval_interval: 95
+method: full
+select_frac: 1.0
+eval_on_load: true
+sweep:
+  - data: 
+      paths: books_small
+    scheduler:
+      t_warmup: 20

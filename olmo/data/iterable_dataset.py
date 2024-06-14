@@ -184,3 +184,53 @@ class IterableDataset(torch.utils.data.IterableDataset[Dict[str, Any]]):
             return dict(**item, index=idx)
         else:
             return {"input_ids": item, "index": idx}
+
+
+class IterableDatasetFixedIndex(IterableDataset):
+    """
+    Iterable dataset that also allows for extra data to be accessed by the same index.
+    Assumes that extra dataset maps idx to a dict of str: tensor.
+
+    Note, this may not work with multi-gpu/node, haven't tested.
+    """
+
+    def __init__(
+        self,
+        dataset: Union[Sequence[List[int]], Sequence[torch.Tensor], Sequence[Dict[str, Any]]],
+        global_batch_size: int,
+        input_index_path: PathOrStr,
+        seed: int = 0,
+        start_index: int = 0,
+        max_examples: Optional[int] = None,
+        shuffle: bool = True,
+        drop_last: bool = False,
+        world_size: Optional[int] = None,
+        rank: Optional[int] = None,
+        fs_local_rank: Optional[int] = None,
+        work_dir: Optional[PathOrStr] = None,
+        num_threads: Optional[int] = None,
+    ):
+        super().__init__(
+            dataset,
+            global_batch_size,
+            seed=seed,
+            start_index=start_index,
+            max_examples=max_examples,
+            shuffle=shuffle,
+            drop_last=drop_last,
+            world_size=world_size,
+            rank=rank,
+            fs_local_rank=fs_local_rank,
+            work_dir=None,  # No work dir since we use the fixed index
+            num_threads=num_threads,
+        )
+        self.indices = np.memmap(input_index_path, mode="r", dtype=np.uint32)
+        # Just load index into memory for now, not too big
+        self.indices = np.array(self.indices)
+        if shuffle:
+            rng = np.random.Generator(np.random.PCG64(seed=self.seed))
+            rng.shuffle(self.indices)
+        self.total_size = len(self.indices)
+
+    def get_global_indices(self) -> np.ndarray:
+        return self.indices

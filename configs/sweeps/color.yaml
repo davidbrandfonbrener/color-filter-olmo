@@ -1,0 +1,16 @@
+# 8 jobs
+# wandb:
+#   group: color
+seed: 1
+
+data:
+  index_path: 
+    - c4-down-tau=64
+    - c4-down-tau=32
+    - c4-down-tau=16
+    - c4-down-tau=7
+    - c4-books-tau=64
+    - c4-books-tau=32
+    - c4-books-tau=16
+    - c4-books-tau=7
+

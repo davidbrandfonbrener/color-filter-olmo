@@ -27,9 +27,10 @@ class DataCollator:
         all_attention_mask = []
         all_attention_bias = []
         all_label_mask = []
+        non_other_keys = ["input_ids", "attention_mask", "attention_bias", "label_mask", "index", "metadata"]
+        all_others = {}
         all_indices = []
         all_metadata = []
-        all_instance_mask = []
         for x in items:
             input_ids = x["input_ids"] if isinstance(x, dict) else x
             if not isinstance(input_ids, torch.Tensor):
@@ -98,15 +99,21 @@ class DataCollator:
             if index is not None:
                 all_indices.append(torch.tensor(index))
 
-            # Instance mask.
-            instance_mask = x.get("instance_mask") if isinstance(x, dict) else None
-            if instance_mask is not None:
-                all_instance_mask.append(torch.tensor(instance_mask))
-
             # Metadata.
             metadata = x.get("metadata") if isinstance(x, dict) else None
             if metadata is not None:
                 all_metadata.append(metadata)
+
+            # others
+            for key in x:
+                if key not in non_other_keys:
+                    if key not in all_others:
+                        all_others[key] = []
+                    t = x.get(key) if isinstance(x, dict) else None
+                    if t is not None:
+                        if not isinstance(t, torch.Tensor):
+                            t = torch.tensor(t)
+                        all_others[key].append(t)
 
         out: Dict[str, Any] = {"input_ids": torch.stack(all_input_ids)}
         if all_attention_mask:
@@ -117,9 +124,9 @@ class DataCollator:
             out["label_mask"] = torch.stack(all_label_mask)
         if all_indices:
             out["index"] = torch.stack(all_indices)
-        if all_instance_mask:
-            out["instance_mask"] = torch.stack(all_instance_mask)
         if all_metadata:
             out["metadata"] = all_metadata
-
+        if all_others:
+            for key in all_others:
+                out[key] = torch.stack(all_others[key])
         return out

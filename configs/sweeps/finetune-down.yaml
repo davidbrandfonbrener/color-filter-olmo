@@ -1,0 +1,24 @@
+# 1 jobs
+# wandb:
+#   group: ft-down
+
+restore_dataloader: false
+reset_optimizer_state: true
+reset_trainer_state: true
+load_path: prior
+select_frac: 1.0
+eval_on_load: true
+device_train_microbatch_size: 32
+max_duration: 1ep
+sft_dataset:
+  type: downstream
+  sft: true
+  sft_use_label: true 
+sweep:
+  - sft_dataset:
+      label: 
+        - piqa_train,hellaswag_train,boolq_train,sciq_train,openbook_qa_train,arc_easy_train,arc_challenge_train,winogrande_train
+    eval_interval: 100
+    scheduler:
+      t_warmup: 100
+

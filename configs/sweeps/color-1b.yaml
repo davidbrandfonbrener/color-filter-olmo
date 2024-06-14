@@ -1,0 +1,29 @@
+# 8 jobs
+# wandb:
+#   group: color-1b
+seed: 1
+
+device_train_microbatch_size: 32
+model:
+  d_model: 2048
+  mlp_hidden_size: 8192
+  n_heads: 32
+  n_layers: 24
+
+time_limit: 2100000 # 600 hrs
+max_duration: 192000 # 24B tokens (8x 24k steps)
+scheduler: 
+  t_warmup: 8000
+# Note: these jobs will run out of data before 192k steps
+
+data:
+  index_path: 
+    - c4-down-tau=64
+    - c4-down-tau=32
+    - c4-down-tau=16
+    - c4-down-tau=7
+    - c4-books-tau=64
+    - c4-books-tau=32
+    - c4-books-tau=16
+    - c4-books-tau=7
+

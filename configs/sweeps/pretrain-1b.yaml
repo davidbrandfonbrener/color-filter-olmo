@@ -1,0 +1,15 @@
+# 1 job
+# wandb:
+#   group: pretrain-1b
+
+device_train_microbatch_size: 32
+model:
+  d_model: 2048
+  mlp_hidden_size: 8192
+  n_heads: 32
+  n_layers: 24
+
+max_duration: 192000
+scheduler: 
+  t_warmup: 8000
+

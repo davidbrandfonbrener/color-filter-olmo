@@ -1,0 +1,11 @@
+# 2 jobs
+# wandb:
+#   group: pretrain
+
+sweep:
+  - max_duration: 24000
+    scheduler: 
+      t_warmup: 1000
+  - max_duration: 192000
+    scheduler: 
+      t_warmup: 8000
