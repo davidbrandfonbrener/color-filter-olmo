@@ -78,10 +78,10 @@ WARNING: the data is 400GB, most of which contains a full tokenized copy of c4. 
 If you use this code in your research, please cite the following paper:
 
 ```bibtex
-@inproceedings{,
-  title={},
-  author={},
-  booktitle={},
-  year={},
+@article{brandfonbrener2024color,
+  title={CoLoR-Filter: Conditional Loss Reduction Filtering for Targeted Language Model Pre-training},
+  author={Brandfonbrener, David and Zhang, Hanlin and Kirsch, Andreas and Schwarz, Jonathan Richard and Kakade, Sham M},
+  journal={arXiv preprint arXiv:XXXX.XXXXX},
+  year={2024}
 }
 ```

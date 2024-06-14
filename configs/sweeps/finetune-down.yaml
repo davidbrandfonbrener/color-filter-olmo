@@ -6,6 +6,7 @@ restore_dataloader: false
 reset_optimizer_state: true
 reset_trainer_state: true
 load_path: prior
+load_checkpoint_type: unsharded
 select_frac: 1.0
 eval_on_load: true
 device_train_microbatch_size: 32

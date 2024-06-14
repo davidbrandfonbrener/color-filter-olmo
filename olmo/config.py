@@ -798,6 +798,11 @@ class TrainConfig(BaseConfig):
     Configs for finetuning on downstream datasets.
     """
 
+    load_checkpoint_type: Optional[CheckpointType] = None
+    """
+    Type of checkpoint to load (sharded or unsharded).
+    """
+
     """
     Original OLMo training configuration.
     """

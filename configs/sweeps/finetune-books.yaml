@@ -6,6 +6,7 @@ restore_dataloader: false
 reset_optimizer_state: true
 reset_trainer_state: true
 load_path: prior
+load_checkpoint_type: unsharded
 max_duration: 1ep
 optimizer:
   learning_rate: 1.0e-3

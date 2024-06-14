@@ -17,7 +17,7 @@ MODEL_DICT = {
     "all_tau=64_1b": f"{download_path}/models/all_tau=64_1b",
 }
 
-# Datasets of reference scores from pretrained models on c4
+# Datasets of scores from auxiliary models on c4
 SCORE_DICT = {
     "pretrain-1-seq": f"{download_path}/scores/pretrain-1-seq",
     "pretrain-2-seq": f"{download_path}/scores/pretrain-2-seq",

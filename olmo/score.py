@@ -16,8 +16,6 @@ from .torch_util import get_world_size, move_to_device
 log = logging.getLogger(__name__)
 
 
-# TODO: change reference name!
-
 class Scorer(Trainer):
 
     def score_step(self, batch: Dict[str, Any]) -> Dict[str, float]:
@@ -33,28 +31,28 @@ class Scorer(Trainer):
         batch = move_to_device(batch, self.device)
         micro_batches = self.split_batch(batch)
         batch_scores = []
-        reference_batch_loss = torch.tensor(0.0, device=self.device)
+        batch_loss = torch.tensor(0.0, device=self.device)
         for micro_batch in micro_batches:
             with torch.autocast("cuda", enabled=True, dtype=self.cfg.autocast_precision):
-                reference_loss, _ = self.model_forward(micro_batch, loss_reduction="none", return_logits=False)
-                reference_loss = reference_loss.mean(dim=-1, keepdim=True)
-                batch_scores.append(reference_loss)
+                loss, _ = self.model_forward(micro_batch, loss_reduction="none", return_logits=False)
+                loss = loss.mean(dim=-1, keepdim=True)
+                batch_scores.append(loss)
 
-                reference_batch_loss += reference_loss.mean().detach() / len(micro_batches)
+                batch_loss += loss.mean().detach() / len(micro_batches)
         batch_scores = torch.concatenate(batch_scores, dim=0)
-        batch_data["ref_score"] = batch_scores.detach().cpu()
+        batch_data["score"] = batch_scores.detach().cpu()
         batch_data["index"] = batch["index"].detach().cpu()
-        metrics["train/ReferenceLoss"] = reference_batch_loss.item()
+        metrics["train/Loss"] = batch_loss.item()
         return metrics, batch_data
 
-    def score_reference(self):
+    def score_model(self):
         self._start_time = time.time()
 
         self.fsdp_model.eval()
 
         # Initializer dataset writer
         data_writer = DictMemmapWriter(
-            Path(self.cfg.save_folder) / "ref_score",
+            Path(self.cfg.save_folder) / "score",
             memmap_dtype=np.float32,
             seq_len=1,
         )
@@ -113,8 +111,8 @@ class Scorer(Trainer):
 
             # Write outputs
             idx = batch_data["index"]
-            ref_score = batch_data["ref_score"]
-            data_writer.write(idx, ref_score)
+            score = batch_data["score"]
+            data_writer.write(idx, score)
 
             # Maybe collect other metrics.
             if should_log_this_step:

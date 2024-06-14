@@ -1,14 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=data-olmo
-#SBATCH --account=kempner_fellows
-#SBATCH --output=/n/holyscratch01/sham_lab/data-olmo/logs/%A_%a.log
+#SBATCH --job-name=color-filter
+#SBATCH --output=logs/%A_%a.log
 #SBATCH --nodes=1              
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1     
 #SBATCH --cpus-per-task=24
 #SBATCH --time=24:00:00
 #SBATCH --mem=250GB		
-#SBATCH --partition=kempner_h100
 #SBATCH --constraint=h100
 
 # Custom environment

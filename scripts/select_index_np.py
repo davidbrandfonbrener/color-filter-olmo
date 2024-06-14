@@ -9,6 +9,7 @@ from olmo.util import clean_opt, prepare_cli_environment
 
 # Data path should be a string of the form: prior1+prior2,cond1+cond2
 
+
 def remove_trailing_zeros(arr):
     non_zero_indices = np.nonzero(arr)[0]
     last_non_zero_index = non_zero_indices[-1]
@@ -17,47 +18,47 @@ def remove_trailing_zeros(arr):
 
 def main(cfg: TrainConfig):
     extra_data_paths = cfg.data.extra_data_paths.split(",")
-    learn_paths = extra_data_paths[0].split("+")  # split by plus
-    ref_paths = extra_data_paths[1].split("+")
+    prior_paths = extra_data_paths[0].split("+")  # split by plus
+    cond_paths = extra_data_paths[1].split("+")
 
-    learn_paths = [SCORE_DICT.get(path, path) for path in learn_paths]
-    ref_paths = [SCORE_DICT.get(path, path) for path in ref_paths]
+    prior_paths = [SCORE_DICT.get(path, path) for path in prior_paths]
+    cond_paths = [SCORE_DICT.get(path, path) for path in cond_paths]
 
     scores = []
     indices = []
-    for learn_path, ref_path in zip(learn_paths, ref_paths):
-        print(f"Learn path: {learn_path}")
-        print(f"Ref path: {ref_path}")
-        print(f"Select frac: {cfg.select_frac}")
+    for prior_path, cond_path in zip(prior_paths, cond_paths):
+        print(f"prior path: {prior_path}")
+        print(f"cond path: {cond_path}")
+        print(f"Tau: {cfg.tau}")
 
-        with open(ref_path + "/files.txt", "r") as f:
-            ref_files = f.readlines()
-        with open(learn_path + "/files.txt", "r") as f:
-            learn_files = f.readlines()
+        with open(cond_path + "/files.txt", "r") as f:
+            cond_files = f.readlines()
+        with open(prior_path + "/files.txt", "r") as f:
+            prior_files = f.readlines()
 
-        ref_idx = np.memmap(ref_path + "/mmap_index.npy", dtype=np.int64, mode="r")
-        ref_idx = np.array(ref_idx)
-        print(ref_idx[:10])
-        learn_idx = np.memmap(learn_path + "/mmap_index.npy", dtype=np.int64, mode="r")
-        learn_idx = np.array(learn_idx)
-        print(learn_idx[:10])
-        assert (ref_idx == learn_idx).all()
+        cond_idx = np.memmap(cond_path + "/mmap_index.npy", dtype=np.int64, mode="r")
+        cond_idx = np.array(cond_idx)
+        print(cond_idx[:10])
+        prior_idx = np.memmap(prior_path + "/mmap_index.npy", dtype=np.int64, mode="r")
+        prior_idx = np.array(prior_idx)
+        print(prior_idx[:10])
+        assert (cond_idx == prior_idx).all()
 
-        ref_idx = remove_trailing_zeros(ref_idx)
-        indices.append(ref_idx)
+        cond_idx = remove_trailing_zeros(cond_idx)
+        indices.append(cond_idx)
 
-        idx_len = len(ref_idx)
+        idx_len = len(cond_idx)
         score_len = 0
-        for ref_file, learn_file in zip(ref_files, learn_files):
-            print(ref_file.split("/")[-1].strip(), learn_file.split("/")[-1].strip())
-            ref_file = ref_file.strip()
-            learn_file = learn_file.strip()
-            refs = np.memmap(ref_file, dtype=np.float32, mode="r", shape=(1048576, 1))
-            learns = np.memmap(learn_file, dtype=np.float32, mode="r", shape=(1048576, 1))
+        for cond_file, prior_file in zip(cond_files, prior_files):
+            print(cond_file.split("/")[-1].strip(), prior_file.split("/")[-1].strip())
+            cond_file = cond_file.strip()
+            prior_file = prior_file.strip()
+            conds = np.memmap(cond_file, dtype=np.float32, mode="r", shape=(1048576, 1))
+            priors = np.memmap(prior_file, dtype=np.float32, mode="r", shape=(1048576, 1))
             if idx_len - score_len < 1048576:
-                refs = refs[: idx_len - score_len]
-                learns = learns[: idx_len - score_len]
-            score = learns.mean(axis=-1) - refs.mean(axis=-1)
+                conds = conds[: idx_len - score_len]
+                priors = priors[: idx_len - score_len]
+            score = priors.mean(axis=-1) - conds.mean(axis=-1)
             scores.append(score)
             score_len += len(score)
 
@@ -66,7 +67,7 @@ def main(cfg: TrainConfig):
     indices = np.concatenate(indices)
     print(f"Indices shape: {indices.shape}")
 
-    k = int(cfg.select_frac * len(scores))
+    k = int((1.0 / cfg.tau) * len(scores))
     sorted_score_idx = np.argsort(scores)
     print(f"Min score: {scores[sorted_score_idx[0]]}")
     print(f"Max score: {scores[sorted_score_idx[-1]]}")

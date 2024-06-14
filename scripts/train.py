@@ -36,7 +36,6 @@ from olmo.torch_util import (
     seed_all,
 )
 
-from olmo.train import Trainer
 from olmo.util import clean_opt, log_extra_field, prepare_cli_environment
 from olmo.registry import MODEL_DICT, INDEX_DICT
 
@@ -114,6 +113,11 @@ def build_models(cfg: TrainConfig):
 
 
 def main(cfg: TrainConfig) -> None:
+    if cfg.just_score_model:
+        from olmo.score import Scorer as Trainer
+    else:
+        from olmo.train import Trainer
+
     # Ensure run name set.
     if cfg.run_name is None:
         raise OLMoConfigurationError("--run_name is required")
@@ -206,7 +210,10 @@ def main(cfg: TrainConfig) -> None:
     log.info(f"Built train dataloader for dataset of size {train_loader.dataset.total_size}")
 
     # Construct evaluators.
-    evaluators = build_evaluators(cfg, device)
+    if cfg.just_score_model:
+        evaluators = []
+    else:
+        evaluators = build_evaluators(cfg, device)
     barrier()
 
     # Build models
@@ -267,7 +274,7 @@ def main(cfg: TrainConfig) -> None:
                 cfg.load_path,
                 load_optimizer_state=not cfg.reset_optimizer_state,
                 load_trainer_state=not cfg.reset_trainer_state,
-                sharded_checkpointer=cfg.load_path_sharded_checkpointer,
+                checkpoint_type=cfg.load_checkpoint_type,
             )
             log.info("Checkpoint successfully loaded")
 
@@ -296,10 +303,10 @@ def main(cfg: TrainConfig) -> None:
             #  trainer.fsdp_model = torch.compile(trainer.fsdp_model, **cfg.compile.asdict())
 
         if not cfg.dry_run:
-            if cfg.just_score_reference:
-                log.info("Scoring reference model...")
+            if cfg.just_score_model:
+                log.info("Scoring model...")
                 trainer.score_step = torch.compile(trainer.score_step, **cfg.compile.asdict())
-                trainer.score_reference()
+                trainer.score_model()
                 log.info("Scoring complete")
             else:
                 log.info("Starting training...")

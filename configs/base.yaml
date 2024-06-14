@@ -1,4 +1,4 @@
-run_name: olmo_${oc.env:SLURM_JOB_ID}
+run_name: color-filter
 seed: 0
 dry_run: false
 
@@ -79,7 +79,6 @@ data:
   prefetch_factor: 16
   persistent_workers: true
   timeout: 0
-  # extra_data_paths: finetune-150-5-48k-books
   extra_data_paths: null
 
 tokenizer:

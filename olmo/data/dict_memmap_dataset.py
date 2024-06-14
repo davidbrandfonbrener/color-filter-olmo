@@ -4,9 +4,6 @@ import numpy as np
 from ..aliases import PathOrStr
 
 
-# TODO: this is maybe not compatible with multiprocessing in the dataloader
-
-
 class DictMemmapDataset(torch.utils.data.Dataset):
     # Each memmap file has at most file_seqs number of sequences
     # The index file is a single numpy array with the indices of the sequences
@@ -21,7 +18,7 @@ class DictMemmapDataset(torch.utils.data.Dataset):
         load_to_ram: bool = False,
     ):
         if key is None:
-            key = "ref_score"
+            key = "score"
         self.key = key
         self.file_seqs = file_seqs
         self.seq_len = seq_len

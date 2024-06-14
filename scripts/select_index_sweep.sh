@@ -1,16 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=data-olmo
-#SBATCH --account=kempner_fellows
-#SBATCH --output=/n/holyscratch01/sham_lab/data-olmo/logs/%A_%a.log
+#SBATCH --job-name=color-filter
+#SBATCH --output=logs/%A_%a.log
 #SBATCH --nodes=1              
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1     
 #SBATCH --cpus-per-task=24
-#SBATCH --time=1:00:00
+#SBATCH --time=24:00:00
 #SBATCH --mem=250GB		
-#SBATCH --partition=kempner
-#SBATCH --array=1-4
-#SBATCH --exclude=holygpu8a19604
+#SBATCH --constraint=h100
 
 # Custom environment
 source ~/.bashrc
@@ -18,8 +15,30 @@ conda deactivate
 conda activate color-filter
 
 export CONFIG=configs/base.yaml
-export SWEEP_CONFIG=configs/sweeps/gen-idx-parallel.yaml
-export CHECKPOINTS_PATH=/n/holyscratch01/sham_lab/data-olmo/data
+
+# Accept sweep config as argument
+export SWEEP_CONFIG=$1
+
+# Accept job index as argument if there is a second argument
+if [ -z "$2" ]
+then
+    echo $SLURM_ARRAY_TASK_ID
+else
+    export SLURM_ARRAY_TASK_ID=$2
+fi
+
+# Set default path for checkpoints if not set
+if [ -z "$CHECKPOINTS_PATH" ]
+then
+    export CHECKPOINTS_PATH=ckpts
+fi
+export CHECKPOINTS_PATH=/n/holyscratch01/sham_lab/data-olmo/ckpts
+
+# Set ntasks if not set
+if [ -z "$SLURM_NTASKS_PER_NODE" ]
+then
+    export SLURM_NTASKS_PER_NODE=1
+fi
 
 # Boilerplate environment variables
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
