@@ -8,7 +8,9 @@ This repo is built on top of [OLMo](https://github.com/allenai/OLMo).
 
 The repo contains modifications to the base `olmo/` directory as well as the `scripts/` and `configs/` necessary to reproduce the main results.
 
-We also release models and data at (https://huggingface.co/hlzhang109/CoLoR-filter).
+This README is structured to show the full pipeline for running CoLoR-Filter from scratch. If you want to skip some step of the process, we also provide datasets and models from intermediate steps in the pipeline at https://huggingface.co/hlzhang109/CoLoR-filter.
+
+If you only want to use our filtered data, see https://huggingface.co/datasets/davidbrandfonbrener/color-filtered-c4 for the raw untokenized data.
 
 
 ## Installation
@@ -21,54 +23,49 @@ conda activate color-filter
 pip install -e .[all]
 ```
 
-## Download data and set paths
+## Train the auxiliary models
 
-WARNING: there is 125GB of non-c4 data and XXGB of tokenized c4 data. If you do not want to download all of the data, use git lfs to only download the files you want.
+Preconditions: c4 is tokenized and listed in `DATA_DICT` in `olmo/registry.py`, and the desired downstream data is also listed in `DATA_DICT` or can be tokenized on the fly (as we do for downstream data).
 
-1. Download the data from (https://huggingface.co/hlzhang109/CoLoR-filter). This can be done with e.g. `git clone https://huggingface.co/hlzhang109/CoLoR-filter`
+Note: we use C4 from [dolma v1.6](https://huggingface.co/datasets/allenai/dolma) tokenized with the `allenai/eleuther-ai-gpt-neox-20b-pii-special` tokenizer. Data needs to be formatted as npy memmap arrays which can be done with the [dolma package](https://github.com/allenai/dolma).
 
-2. Change the `download_path` in `olmo/registry.py` to point to the downloaded data on your machine.
+1. Pretrain the prior model. For example, run `bash scripts/launch_sweep.sh configs/sweeps/pretrain.yaml 1` to start training the 1st job from the sweep. Change 1 to a different index to start a different job. If using slurm, you can launch the sweep using an sbatch array job.
 
-3. (Optional): set the environment variable `CHECKPOINTS_PATH`, otherwise we will default to using `./ckpts/` to store checkpoints when training models.
+2. Add the prior model to `MODEL_DICT` in `olmo/registry.py`.
 
+3. Finetune the conditional model. For example, run `bash scripts/launch_sweep.sh configs/sweeps/finetune-down.yaml 1`.
 
-## Training on our selected data from C4
-
-1. Run `bash scripts/launch_sweep.sh configs/sweeps/color-1b.yaml 1` to start training the 1st job from the sweep. Change 1 to a different index to start a different job. If using slurm, you can launch the sweep using an sbatch array job.
-
-Note: We use C4 from [dolma v1.6](https://huggingface.co/datasets/allenai/dolma) tokenized with the `allenai/eleuther-ai-gpt-neox-20b-pii-special` tokenizer.
+4. Add the prior and conditional models to `MODEL_DICT` in `olmo/registry.py`.
 
 
-## Selecting from your data using our auxiliary models
+## Select from your data using auxiliary models
 
-1. Format data into npy memmap arrays as in our copy of C4.
+Preconditions: c4 is tokenized and listed in `DATA_DICT` in `olmo/registry.py`, and the prior and conditional models are listed in `MODEL_DICT` in `olmo/registry.py`.
 
-2. Run `bash scripts/launch_sweep.sh configs/sweeps/score-parallel.yaml 1` to score data. 
+1. Run `bash scripts/launch_sweep.sh configs/sweeps/score-parallel.yaml 1` to score data.
 
-3. Add your score to `SCORE_DICT` in `olmo/registry.py`. and modify `configs/sweeps/gen-idx.yaml` to point to your scores.
+2. Add your score to `SCORE_DICT` in `olmo/registry.py`. and modify `configs/sweeps/gen-idx.yaml` to point to your scores.
 
-4. Run `bash scripts/select_index_sweep.sh configs/sweeps/gen-idx.yaml 1` to create an index of the selected data. 
+3. Run `bash scripts/select_index_sweep.sh configs/sweeps/gen-idx.yaml 1` to create an index of the selected data.
 
-5. Add the index to `INDEX_DICT` in `olmo/registry.py` and modify `configs/sweeps/color-1b.yaml` to point to your index.
+4. Add the index to `INDEX_DICT` in `olmo/registry.py` and modify `configs/sweeps/color-1b.yaml` to point to your index.
 
-6. Train on the selected data as in the previous section. Modify the `data.index_path` in the config to point to the new indices created in the previous step.
+## Train on our selected data from C4
+
+Preconditions: c4 is tokenized and listed in `DATA_DICT` in `olmo/registry.py` and the data index is listed in `INDEX_DICT` in `olmo/registry.py`.
+
+Note: Set the environment variable `CHECKPOINTS_PATH`, otherwise we will default to using `./ckpts/` to store checkpoints when training models.
+
+1. Run `bash scripts/launch_sweep.sh configs/sweeps/color-1b.yaml 1` to train a 1b model on the filtered data.
 
 
-## Training your own auxiliary models
+## Optional: download our data to skip steps
 
-Note: this will allow you to train from scratch, no need to download any data.
+WARNING: the data is 400GB, most of which contains a full tokenized copy of c4. If you do not want to download all of the data, use the [huggingface-cli tool](https://huggingface.co/docs/huggingface_hub/v0.23.4/guides/cli#huggingface-cli-download) to only download the parts that you want.
 
-1. Format the data into npy memmap arrays as in our copy of C4 and our downstream data. This can be done by tokenizing your data using [dolma](https://huggingface.co/datasets/allenai/dolma).
+1. Download the data: `huggingface-cli download hlzhang109/CoLoR-filter --local-dir YOUR_PATH`. This will download the data to your huggingface cache and create a local-dir with symbolic links to the data. If you actually want the data at `YOUR_PATH`, set it as the `--cache-dir` in the command.
 
-2. Pretrain the prior model. For an example, see `configs/pretrain.yaml`.
-
-3. Add the prior model to `MODEL_DICT` in `olmo/registry.py`.
-
-4. Finetune the conditional model. For an example, see `configs/finetune-books.yaml` or `configs/finetune-down.yaml`.
-
-5. Add the prior and conditional models to `MODEL_DICT` in `olmo/registry.py`.
-
-6. Select the data and train on selected data as in the previous sections.
+2. Change the `download_path` in `olmo/registry.py` to point to the downloaded data on your machine, i.e. to `YOUR_PATH`.
 
 
 ## Citation

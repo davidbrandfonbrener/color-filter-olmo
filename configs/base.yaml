@@ -71,7 +71,7 @@ activation_checkpointing: false
 softmax_auxiliary_loss: true
 
 data:
-  paths: our-c4
+  paths: c4
   pad_direction: right
   num_workers: 16 
   drop_last: true

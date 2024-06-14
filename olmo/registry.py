@@ -1,11 +1,10 @@
-download_path = "/n/holyscratch01/kempner_fellows/Users/dbrandfonbrener/CoLoR-filter"
+download_path = "/n/holyscratch01/kempner_fellows/Users/dbrandfonbrener/color-filter"
 # download_path = "YOUR_PATH_HERE"
 
 DATA_DICT = {
-    "our-c4": "/n/holylfs06/LABS/kempner_shared/Lab/data/dolma/preprocessed/eleuther-ai-gpt-neox-20b-pii-special/c4/",
-    # "our-c4": f"{download_path}/data/our-c4",
+    "c4": f"{download_path}/full_data/c4",
     "books-small": f"{download_path}/downstream_data/books",
-    "books-val": f"{download_path}/downstream_data/books_val",  # TODO: download val
+    "books-val": f"{download_path}/downstream_data/books_val",
 }
 
 # Pretrained model weights
