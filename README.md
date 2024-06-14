@@ -23,7 +23,11 @@ conda activate color-filter
 pip install -e .[all]
 ```
 
-## Train the auxiliary models
+## Schematic of the pipeline
+
+![alt text](https://github.com/davidbrandfonbrener/color-filter-olmo/blob/main/pipeline.png?raw=true)
+
+## 1. Train the auxiliary models
 
 Preconditions: c4 is tokenized and listed in `DATA_DICT` in `olmo/registry.py`, and the desired downstream data is also listed in `DATA_DICT` or can be tokenized on the fly (as we do for downstream data).
 
@@ -38,7 +42,7 @@ Note: we use C4 from [dolma v1.6](https://huggingface.co/datasets/allenai/dolma)
 4. Add the prior and conditional models to `MODEL_DICT` in `olmo/registry.py`.
 
 
-## Select from your data using auxiliary models
+## 2. Select from your data using auxiliary models
 
 Preconditions: c4 is tokenized and listed in `DATA_DICT` in `olmo/registry.py`, and the prior and conditional models are listed in `MODEL_DICT` in `olmo/registry.py`.
 
@@ -50,7 +54,8 @@ Preconditions: c4 is tokenized and listed in `DATA_DICT` in `olmo/registry.py`, 
 
 4. Add the index to `INDEX_DICT` in `olmo/registry.py` and modify `configs/sweeps/color-1b.yaml` to point to your index.
 
-## Train on our selected data from C4
+
+## 3. Train on our selected data from C4
 
 Preconditions: c4 is tokenized and listed in `DATA_DICT` in `olmo/registry.py` and the data index is listed in `INDEX_DICT` in `olmo/registry.py`.
 
