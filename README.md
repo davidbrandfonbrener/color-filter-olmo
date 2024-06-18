@@ -2,7 +2,7 @@
 
 ## Description
 
-Code for the paper "CoLoR-Filter: Conditional Loss Reduction Filtering for Targeted Language Model Pre-training". 
+Code for the paper ["CoLoR-Filter: Conditional Loss Reduction Filtering for Targeted Language Model Pre-training"](https://arxiv.org/abs/2406.10670). 
 
 This repo is built on top of [OLMo](https://github.com/allenai/OLMo).
 
@@ -81,7 +81,7 @@ If you use this code in your research, please cite the following paper:
 @article{brandfonbrener2024color,
   title={CoLoR-Filter: Conditional Loss Reduction Filtering for Targeted Language Model Pre-training},
   author={Brandfonbrener, David and Zhang, Hanlin and Kirsch, Andreas and Schwarz, Jonathan Richard and Kakade, Sham M},
-  journal={arXiv preprint arXiv:XXXX.XXXXX},
+  journal={arXiv preprint arXiv:2406.10670},
   year={2024}
 }
 ```
